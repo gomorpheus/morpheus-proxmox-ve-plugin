@@ -1,2 +1,2 @@
-# morpheus-promox-ve-plugin
+# morpheus-proxmox-ve-plugin
 Proxmox VE Morpheus Cloud Plugin
