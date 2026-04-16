@@ -399,18 +399,18 @@ class ProxmoxApiComputeUtil {
             if(!results?.success || results?.hasErrors()) {
                 def errorMsg = "Clone operation failed"
                 try {
-                    def errorData = new JsonSlurper().parseText(results.content)
+                    def errorData = results.data
                     if (errorData?.message) {
                         errorMsg = errorData.message.trim()
                     } else if (errorData?.data?.message) {
                         errorMsg = errorData.data.message.trim()
-                    } else if (results?.content) {
-                        errorMsg = results.content
+                    } else if (results?.data) {
+                        errorMsg = results.data?.toString()
                     }
                 } catch (e) {
                     log.warn("Failed to parse error response: ${e.message}")
-                    if (results?.content) {
-                        errorMsg = results.content
+                    if (results?.data) {
+                        errorMsg = results.data?.toString()
                     }
                 }
                 return ServiceResponse.error(errorMsg)
@@ -418,7 +418,7 @@ class ProxmoxApiComputeUtil {
 
             def resultData = null
             try {
-                resultData = new JsonSlurper().parseText(results.content)
+                resultData = results.data
             } catch (e) {
                 log.error("Failed to parse clone response: ${e.message}")
                 return ServiceResponse.error("Failed to parse clone API response")
@@ -814,13 +814,13 @@ class ProxmoxApiComputeUtil {
                     'POST'
             )
 
-            def resultData = new JsonSlurper().parseText(results.content)
+            def resultData = results.data
             if (results?.success && !results?.hasErrors()) {
                 rtn.success = true
                 rtn.data = resultData
                 rtn.data.templateId = nextId
             } else {
-                rtn.msg = "Template create failed: $results.data $results $results.errorCode $results.content"
+                rtn.msg = "Template create failed: $results.data $results $results.errorCode $results.data"
                 rtn.success = false
             }
         } catch (e) {
@@ -866,7 +866,7 @@ class ProxmoxApiComputeUtil {
                     return results
                 }
 
-                def resultData = new JsonSlurper().parseText(results.content)
+                def resultData = results.data
                 if (!resultData.data.containsKey("lock")) {
                     return results
                 } else {
@@ -926,7 +926,7 @@ class ProxmoxApiComputeUtil {
                     continue
                 }
 
-                def resultData = new JsonSlurper().parseText(results.content)
+                def resultData = results.data
                 def status = resultData?.data?.status
                 
                 log.debug("Task status: $status")
