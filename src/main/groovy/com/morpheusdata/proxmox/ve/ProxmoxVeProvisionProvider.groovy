@@ -318,101 +318,192 @@ class ProxmoxVeProvisionProvider extends AbstractProvisionProvider implements Vm
 
 		def rtn = ServiceResponse.success()
 
-        // Node, image and network fields are required
-        def basicValidation = validateProvisioningOptions(opts)
-        if(!basicValidation.success) {
-            rtn.success = false
-            rtn.errors = basicValidation.errors
-            return rtn
-        }
-
-        HttpApiClient client = new HttpApiClient()
-		Cloud cloud = context.async.cloud.get(opts.zoneId?.toLong()).blockingGet()
-		ComputeServer selectedNode = getHypervisorHostByExternalId(cloud.id, opts.config.proxmoxNode)
-
-        if(selectedNode && selectedNode.powerState != ComputeServer.PowerState.on) {
-			rtn.success = false
-			rtn.addError("proxmoxNode", VALIDATION_MSG_INACTIVE_NODE)
-			return rtn
-		}
-
-        Map authConfig = plugin.getAuthConfig(cloud)
-
-        List<Map> wizardInterfaces = opts.networkInterfaces
-        List<Map> instanceDisks = opts.volumes
-        Long imageId = opts.config.imageId as Long
-        Map proxmoxNode = ProxmoxApiComputeUtil.getProxmoxHypervisorHostByName(client, authConfig, opts.config.proxmoxNode).data
-
-        //get proxmox datastores from API using morpheus datastore IDs from wizard
-        List<String> wizardDatastoreExternalIds = []
-        opts.volumes.each {
-            if (it.datastoreId != "auto") {
-                wizardDatastoreExternalIds << context.async.cloud.datastore.listById([it.datastoreId as Long]).blockingFirst().externalId
+        try {
+            // Node, image and network fields are required
+            def basicValidation = validateProvisioningOptions(opts)
+            if(!basicValidation.success) {
+                rtn.success = false
+                rtn.errors = basicValidation.errors
+                return rtn
             }
-        }
-        List<Map> wizardDatastores = ProxmoxApiComputeUtil.getProxmoxDatastoresById(client, authConfig, wizardDatastoreExternalIds).data
 
-        //get virtualImage Datastores
-        def virtualImage = context.async.virtualImage.listById([imageId]).blockingFirst()
-        def virtualImageExternalId = virtualImage.externalId as Long
-        def proxmoxTemplate = ProxmoxApiComputeUtil.getTemplateById(client, authConfig, virtualImageExternalId).data
+            HttpApiClient client = new HttpApiClient()
+            Cloud cloud = context.async.cloud.get(opts.zoneId?.toLong()).blockingGet()
+            if (!cloud) {
+                rtn.success = false
+                rtn.addError("zoneId", "Invalid Cloud/Zone ID")
+                return rtn
+            }
 
-        log.debug("PROXMOX TEMPLATE IS: $proxmoxTemplate")
-        log.debug("SELECTED DATASTORES: $wizardDatastores")
-        log.debug("SELECTED NODE DATASTORES: ${proxmoxNode.datastores}")
-        log.debug("SELECTED NETWORKS: $wizardInterfaces")
-        log.debug("SELECTED NODE NETWORKS: ${proxmoxNode.networks}")
+            ComputeServer selectedNode = getHypervisorHostByExternalId(cloud.id, opts.config?.proxmoxNode)
 
-        //ensure that we aren't uploading the template for the first time
-        if (proxmoxTemplate) {
-            log.debug("SELECTED TEMPLATE DATASTORES: ${proxmoxTemplate.datastores}")
+            if(selectedNode && selectedNode.powerState != ComputeServer.PowerState.on) {
+                rtn.success = false
+                rtn.addError("proxmoxNode", VALIDATION_MSG_INACTIVE_NODE)
+                return rtn
+            }
 
-            //Check that the node can see see the template disk to copy it
-            proxmoxTemplate.datastores.each { String templateDS ->
-                if (!proxmoxNode.datastores.contains(templateDS)) {
-                    log.error("Error provisioning: Selected Virtual Image '${virtualImage.name}' disk datastore '$templateDS' is not attached to selected node '${opts.config.proxmoxNode}'.")
-                    def errorMsg = String.format(VALIDATION_MSG_IMAGE_DATASTORE_NOT_ATTACHED, virtualImage.name, templateDS, opts.config.proxmoxNode)
-                    rtn.addError("imageId", errorMsg)
+            Map authConfig = plugin.getAuthConfig(cloud)
+
+            List<Map> wizardInterfaces = opts.networkInterfaces ?: []
+            List<Map> instanceDisks = opts.volumes ?: []
+            Long imageId = opts.config?.imageId ? (opts.config.imageId as Long) : null
+            
+            def nodeResp = ProxmoxApiComputeUtil.getProxmoxHypervisorHostByName(client, authConfig, opts.config?.proxmoxNode)
+            Map proxmoxNode = nodeResp?.data
+
+            if (!proxmoxNode) {
+                log.error("Could not fetch Proxmox node details for node '${opts.config?.proxmoxNode}'")
+                rtn.addError("proxmoxNode", "Unable to retrieve Proxmox node details for '${opts.config?.proxmoxNode}'")
+                rtn.success = false
+                return rtn
+            }
+
+            List<String> nodeDatastores = (proxmoxNode.datastores as List<String>) ?: []
+            List<String> nodeNetworks = (proxmoxNode.networks as List<String>) ?: []
+
+            //get proxmox datastores from API using morpheus datastore IDs from wizard
+            List<String> wizardDatastoreExternalIds = []
+            instanceDisks.each { Map vol ->
+                if (vol.datastoreId != "auto" && vol.datastoreId != null) {
+                    try {
+                        def dsObj = context.async.cloud.datastore.listById([vol.datastoreId as Long]).blockingFirst(null)
+                        if (dsObj?.externalId) {
+                            wizardDatastoreExternalIds << dsObj.externalId
+                        }
+                    } catch (Exception e) {
+                        log.warn("Failed to find datastore with id ${vol.datastoreId}: ${e.message}")
+                    }
+                }
+            }
+            
+            List<Map> wizardDatastores = []
+            if (wizardDatastoreExternalIds) {
+                wizardDatastores = ProxmoxApiComputeUtil.getProxmoxDatastoresById(client, authConfig, wizardDatastoreExternalIds)?.data ?: []
+            }
+
+            //get virtualImage Datastores
+            def virtualImage = imageId ? context.async.virtualImage.listById([imageId]).blockingFirst(null) : null
+            Map proxmoxTemplate = null
+            if (virtualImage?.externalId) {
+                try {
+                    def virtualImageExternalId = virtualImage.externalId as Long
+                    proxmoxTemplate = ProxmoxApiComputeUtil.getTemplateById(client, authConfig, virtualImageExternalId)?.data
+                } catch (Exception e) {
+                    log.warn("Could not fetch template by externalId ${virtualImage.externalId}: ${e.message}")
+                }
+            }
+
+            log.debug("PROXMOX TEMPLATE IS: $proxmoxTemplate")
+            log.debug("SELECTED DATASTORES: $wizardDatastores")
+            log.debug("SELECTED NODE DATASTORES: ${nodeDatastores}")
+            log.debug("SELECTED NETWORKS: $wizardInterfaces")
+            log.debug("SELECTED NODE NETWORKS: ${nodeNetworks}")
+
+            //ensure that we aren't uploading the template for the first time
+            if (proxmoxTemplate && proxmoxTemplate.datastores) {
+                log.debug("SELECTED TEMPLATE DATASTORES: ${proxmoxTemplate.datastores}")
+
+                //Check that the node can see see the template disk to copy it
+                proxmoxTemplate.datastores.each { String templateDS ->
+                    if (!nodeDatastores.contains(templateDS)) {
+                        log.error("Error provisioning: Selected Virtual Image '${virtualImage.name}' disk datastore '$templateDS' is not attached to selected node '${opts.config.proxmoxNode}'.")
+                        def errorMsg = String.format(VALIDATION_MSG_IMAGE_DATASTORE_NOT_ATTACHED, virtualImage.name, templateDS, opts.config.proxmoxNode)
+                        rtn.addError("imageId", errorMsg)
+                    } else {
+                        log.debug("Datastore '$templateDS' is present and valid on proxmox node '${opts.config.proxmoxNode}'.")
+                    }
+                }
+
+                if (rtn.errors && rtn.errors.size() > 0) {
+                    rtn.success = false
+                    return rtn
+                }
+            }
+
+            //check that each disk datastore is present on the node
+            wizardDatastores.each { Map wizardDS ->
+                if (wizardDS.storage && !nodeDatastores.contains(wizardDS.storage)) {
+                    log.error("Error provisioning: Selected datastore '$wizardDS.storage' is not attached to selected node '${opts.config.proxmoxNode}'.")
+                    def errorMsg = String.format(VALIDATION_MSG_DATASTORE_NOT_ATTACHED, wizardDS.storage, opts.config.proxmoxNode)
+                    rtn.addError("volume", errorMsg)
                 } else {
-                    log.debug("Datastore '$templateDS' is present and valid on proxmox node '${opts.config.proxmoxNode}'.")
+                    log.debug("Datastore '$wizardDS.storage' is present and valid on proxmox node '${opts.config.proxmoxNode}'.")
+                }
+
+                if (rtn.errors && rtn.errors.size() > 0) {
+                    rtn.success = false
+                    return rtn
+                }
+            }
+
+            //check that selected networks are attached to host
+            wizardInterfaces.each { Map wizardNetwork ->
+                def networkName = null
+                
+                // Check direct name or externalId in map
+                if (wizardNetwork.network?.externalId) {
+                    networkName = wizardNetwork.network.externalId
+                } else if (wizardNetwork.network?.name && nodeNetworks.contains(wizardNetwork.network.name)) {
+                    networkName = wizardNetwork.network.name
+                }
+                
+                // If name not resolved, look up Network entity from Morpheus context by ID
+                if (!networkName) {
+                    def netIdRaw = wizardNetwork.network?.id ?: wizardNetwork.networkId ?: wizardNetwork.id
+                    if (netIdRaw != null) {
+                        try {
+                            String netIdStr = netIdRaw.toString()
+                            if (netIdStr.startsWith("network-")) {
+                                netIdStr = netIdStr.replace("network-", "")
+                            }
+                            if (netIdStr.isNumber()) {
+                                Long netId = netIdStr.toLong()
+                                def networkObj = context.async.network.listById([netId]).blockingFirst(null)
+                                if (networkObj) {
+                                    networkName = networkObj.externalId ?: networkObj.name
+                                }
+                            } else if (netIdStr.startsWith("pool-")) {
+                                Long poolId = netIdStr.replace("pool-", "").toLong()
+                                def assocNetworks = context.async.network.list(new DataQuery().withFilter("pool.id", poolId)).blockingToList()
+                                if (assocNetworks && assocNetworks.size() > 0) {
+                                    networkName = assocNetworks[0].externalId ?: assocNetworks[0].name
+                                }
+                            }
+                        } catch (Exception e) {
+                            log.warn("Failed to resolve network object for ${netIdRaw}: ${e.message}")
+                        }
+                    }
+                }
+
+                // Fallback: if networkName is still null, but wizardNetwork.network.name is present, use it
+                if (!networkName && wizardNetwork.network?.name) {
+                    networkName = wizardNetwork.network.name
+                }
+
+                log.debug("Resolved network interface name for validation: ${networkName} (raw network map: ${wizardNetwork.network})")
+
+                if (networkName) {
+                    if (!nodeNetworks.contains(networkName)) {
+                        log.error("Error provisioning: Selected network '${networkName}' is not attached to selected node '${opts.config.proxmoxNode}'. Node networks: ${nodeNetworks}")
+                        def errorMsg = String.format(VALIDATION_MSG_NETWORK_NOT_ATTACHED, networkName, opts.config.proxmoxNode)
+                        rtn.addError("networkInterface", errorMsg)
+                    } else {
+                        log.debug("Network '$networkName' is present and valid on proxmox node '${opts.config.proxmoxNode}'.")
+                    }
+                } else {
+                    log.warn("Could not resolve specific Proxmox network interface name for network interface: ${wizardNetwork}. Skipping strict host-attachment check.")
                 }
             }
 
             if (rtn.errors && rtn.errors.size() > 0) {
                 rtn.success = false
-                return rtn
-            }
-        }
-
-        //check that each disk datastore is present on the node
-        wizardDatastores.each { Map wizardDS ->
-            if (!proxmoxNode.datastores.contains(wizardDS.storage)) {
-                log.error("Error provisioning: Selected datastore '$wizardDS.storage' is not attached to selected node '${opts.config.proxmoxNode}'.")
-                def errorMsg = String.format(VALIDATION_MSG_DATASTORE_NOT_ATTACHED, wizardDS.storage, opts.config.proxmoxNode)
-                rtn.addError("volume", errorMsg)
-            } else {
-                log.debug("Datastore '$wizardDS.storage' is present and valid on proxmox node '${opts.config.proxmoxNode}'.")
             }
 
-            if (rtn.errors && rtn.errors.size() > 0) {
-                rtn.success = false
-                return rtn
-            }
-        }
-
-        //check that selected networks are attached to host
-        wizardInterfaces.each { Map wizardNetwork ->
-            if (!proxmoxNode.networks.contains(wizardNetwork.network.name)) {
-                log.error("Error provisioning: Selected network '${wizardNetwork.network.name}' is not attached to selected node '${opts.config.proxmoxNode}'.")
-                def errorMsg = String.format(VALIDATION_MSG_NETWORK_NOT_ATTACHED, wizardNetwork.network.name, opts.config.proxmoxNode)
-                rtn.addError("networkInterface", errorMsg)
-            } else {
-                log.debug("Network '$wizardNetwork.network.name' is present and valid on proxmox node '${opts.config.proxmoxNode}'.")
-            }
-        }
-
-        if (rtn.errors && rtn.errors.size() > 0) {
+        } catch (Throwable e) {
+            log.error("Unhandled error during validateWorkload: ${e.message}", e)
             rtn.success = false
+            rtn.addError("validation", "Validation error: ${e.message}")
         }
 
         return rtn
@@ -421,18 +512,22 @@ class ProxmoxVeProvisionProvider extends AbstractProvisionProvider implements Vm
     private ServiceResponse validateProvisioningOptions(Map opts) {
         def rtn = ServiceResponse.success()
 
-        if (!opts.config.proxmoxNode) {
+        if (!opts.config?.proxmoxNode) {
             rtn.addError("proxmoxNode", VALIDATION_MSG_NO_NODE)
         }
 
-        if (!opts.config.imageId) {
+        if (!opts.config?.imageId) {
             rtn.addError("imageId", VALIDATION_MSG_NO_IMAGE)
         }
 
         if (opts.networkInterfaces?.size() > 0) {
             def hasNetwork = true
-            opts.networkInterfaces?.each {
-                if (!it.network.group && it.network.id == null) {
+            opts.networkInterfaces?.each { Map netIface ->
+                def net = netIface?.network
+                def netId = net?.id ?: netIface?.networkId ?: netIface?.id
+                def group = net?.group ?: netIface?.group
+                def pool = net?.pool ?: netIface?.pool ?: netIface?.networkPoolId
+                if (!group && !pool && netId == null) {
                     hasNetwork = false
                 }
             }

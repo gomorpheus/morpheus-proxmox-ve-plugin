@@ -67,7 +67,7 @@ class ProxmoxNetworkProvider implements NetworkProvider, CloudInitializationProv
 				vlanIdEditable    : false,
 				canAssignPool     : true,
 				name              : 'Proxmox VE Bridge Network',
-				hasNetworkServer  : true,
+				hasNetworkServer  : false,
 				creatable: true
 		])
 
@@ -88,22 +88,23 @@ class ProxmoxNetworkProvider implements NetworkProvider, CloudInitializationProv
 
 	@Override
 	ServiceResponse initializeProvider(Cloud cloud) {
-		log.debug("Initializeing network provider for ${cloud.name}")
+		log.debug("Initializing network provider for ${cloud.name}")
 		ServiceResponse rtn = ServiceResponse.prepare()
 		try {
-			NetworkServer networkServer = new NetworkServer(
-				name: cloud.name,
-				type: new NetworkServerType(code:"proxmox-ve.network")
-			)
-			morpheus.services.integration.registerCloudIntegration(cloud.id, networkServer)
+			boolean enableNetworkServer = cloud.configMap?.enableNetworkServer?.toString()?.toBoolean() ?: false
+			if (enableNetworkServer) {
+				NetworkServer networkServer = new NetworkServer(
+					name: cloud.name,
+					type: new NetworkServerType(code: "proxmox-ve.network")
+				)
+				morpheus.services.integration.registerCloudIntegration(cloud.id, networkServer)
+			}
 			morpheus.services.cloud.save(cloud)
-
 			rtn.success = true
 		} catch (Exception e) {
 			rtn.success = false
 			log.error("initializeProvider error: {}", e, e)
 		}
-
 		return rtn
 	}
 

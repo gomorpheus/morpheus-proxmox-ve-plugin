@@ -179,6 +179,18 @@ class ProxmoxVeCloudProvider implements CloudProvider {
 				required: true
 		)
 
+		options << new OptionType(
+				name: 'Enable Network Server Integration',
+				code: 'enableNetworkServer',
+				displayOrder: 7,
+				fieldContext: 'config',
+				fieldLabel: 'Network Server Integration',
+				fieldName: 'enableNetworkServer',
+				inputType: OptionType.InputType.CHECKBOX,
+				required: false,
+				defaultValue: false,
+				helpBlock: 'Check this only if using Proxmox Network Server integration. Leave UNCHECKED if using external IPAM (such as EfficientIP or Infoblox).'
+		)
 
 		return options
 	}
@@ -219,7 +231,7 @@ class ProxmoxVeCloudProvider implements CloudProvider {
 				vlanIdEditable    : false,
 				canAssignPool     : true,
 				name              : 'Proxmox VE Bridge Network',
-				hasNetworkServer  : true,
+				hasNetworkServer  : false,
 				creatable: true
 		])
 
@@ -233,7 +245,7 @@ class ProxmoxVeCloudProvider implements CloudProvider {
 				vlanIdEditable    : false,
 				canAssignPool     : true,
 				name              : 'Proxmox VE VLAN Network',
-				hasNetworkServer  : true,
+				hasNetworkServer  : false,
 				creatable: true
 		])
 
@@ -247,7 +259,7 @@ class ProxmoxVeCloudProvider implements CloudProvider {
 				vlanIdEditable    : false,
 				canAssignPool     : true,
 				name              : 'Proxmox VE vNet Network',
-				hasNetworkServer  : true,
+				hasNetworkServer  : false,
 				creatable: true
 		])
 
@@ -261,7 +273,7 @@ class ProxmoxVeCloudProvider implements CloudProvider {
 				vlanIdEditable    : false,
 				canAssignPool     : true,
 				name              : 'Proxmox VE Unknown Network',
-				hasNetworkServer  : true,
+				hasNetworkServer  : false,
 				creatable: false
 		])
 
